@@ -106,7 +106,7 @@ int main() {
     // get winlogon token
     if (OpenProcessToken(
         hProcess,
-        TOKEN_DUPLICATE,
+        TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
         &hSystemToken
     ) == FALSE) {
         printf("[-]Failed OpenProcessToken: %lu\n", GetLastError());
